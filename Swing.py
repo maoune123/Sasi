@@ -83,7 +83,6 @@ def detect_swing(candles):
         return None
 
     formation = "BASIC"
-    # التحقق من شروط السلسلة (Sequence)
     if swing_type == "HIGH":
         if nxt["close"] < previous["low"] and nxt["high"] <= previous["high"]:
             formation = "SEQUENCE"
@@ -140,7 +139,6 @@ async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
         return
     if payload.user_id == bot.user.id:
         return
-    # التأكد من أن الرياكشن على إحدى رسائل الاشتراك
     if payload.message_id == subscription_message_ids.get("4H"):
         subscribers_4h.add(payload.user_id)
         logger.info(f"Added user {payload.user_id} to 4H subscribers.")
@@ -151,7 +149,7 @@ async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
 # -----------------------------------------
 # المهمة الدورية لتحديث الأسعار وفحص السوينغ
 # -----------------------------------------
-@tasks.loop(seconds=3600)  # يتم الفحص كل ساعة (3600 ثانية)
+@tasks.loop(seconds=60)  # يتم الفحص كل 60 ثانية
 async def update_prices():
     logger.debug("Checking prices for all symbols and timeframes...")
     for symbol, cfg in config.items():
@@ -173,7 +171,7 @@ async def update_prices():
                 close = float(indicators.get("close", 0))
 
                 data = price_data[symbol][tf_label]
-                # إذا لم تتغير بيانات الشمعة (أي لا توجد شمعة جديدة) لا نقوم بتسجيلها
+                # نقارن وقت الشمعة الجديدة مع آخر وقت مسجل؛ إذا كان مختلفًا فهذا يعني أن الشمعة أُغلقت وظهرت شمعة جديدة
                 if not data["last_candles"] or data["last_candles"][-1]["time"] != candle_time:
                     new_candle = {"high": high, "low": low, "close": close, "time": candle_time}
                     data["last_candles"].append(new_candle)
