@@ -1,0 +1,3 @@
+discord.py
+tradingview_ta
+python-dotenv
