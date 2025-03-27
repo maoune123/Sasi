@@ -13,7 +13,7 @@ TOKEN = os.getenv("DISCORD_TOKEN")
 ALERT_CHANNEL_ID = int(os.getenv("ALERT_CHANNEL_ID"))
 
 # MongoDB configuration
-MONGO_URI = os.getenv("MONGO_URI")
+MONGO_URI = os.getenv("MONGO_URI")  # e.g., "mongodb+srv://username:password@cluster.xxxx.mongodb.net/myCandlesDB?retryWrites=true&w=majority&tlsAllowInvalidCertificates=true"
 DATABASE_NAME = os.getenv("DATABASE_NAME", "candles_db")
 COLLECTION_NAME = os.getenv("COLLECTION_NAME", "candles")
 
@@ -68,14 +68,14 @@ def detect_swing(candles):
 
     swing_type = None
     # Check for Swing High
-    if (candidate["high"] > previous["high"] and 
-        candidate["high"] > nxt["high"] and 
-        nxt["low"] <= candidate["low"]):
+    if (candidate["high"] > previous["high"]
+        and candidate["high"] > nxt["high"]
+        and nxt["low"] <= candidate["low"]):
         swing_type = "HIGH"
     # Check for Swing Low
-    elif (candidate["low"] < previous["low"] and 
-          candidate["low"] < nxt["low"] and 
-          nxt["high"] >= candidate["high"]):
+    elif (candidate["low"] < previous["low"]
+          and candidate["low"] < nxt["low"]
+          and nxt["high"] >= candidate["high"]):
         swing_type = "LOW"
     else:
         return None
@@ -127,6 +127,7 @@ async def on_ready():
                         for u in users:
                             if u.id != bot.user.id:
                                 subscribers_1d.add(u.id)
+        # If not found, create them
         if not subscription_message_ids["4H"]:
             msg_4h = await alert_channel.send("مهتم ب 4H سوينغ\nاضغط على الرياكشن للتسجيل.")
             subscription_message_ids["4H"] = msg_4h.id
