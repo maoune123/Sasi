@@ -4,12 +4,21 @@ from dotenv import load_dotenv
 import discord
 from discord.ext import commands, tasks
 from tradingview_ta import TA_Handler, Interval
-from keep_alive import keep_alive  # استيراد دالة البقاء نشط
+from pymongo import MongoClient
+from keep_alive import keep_alive  # دالة keep_alive لتشغيل خادم ويب بسيط
 
 # تحميل المتغيرات من ملف .env
 load_dotenv()
 TOKEN = os.getenv("DISCORD_TOKEN")
 ALERT_CHANNEL_ID = int(os.getenv("ALERT_CHANNEL_ID"))
+
+# إعداد MongoDB: يتم جلب DATABASE_NAME و COLLECTION_NAME من ملف .env، أو استخدام القيم الافتراضية
+MONGO_URI = os.getenv("MONGO_URI")
+DATABASE_NAME = os.getenv("DATABASE_NAME", "candles_db")
+COLLECTION_NAME = os.getenv("COLLECTION_NAME", "candles")
+mongo_client = MongoClient(MONGO_URI)
+db = mongo_client[DATABASE_NAME]
+collection = db[COLLECTION_NAME]
 
 # إعداد السجل
 logging.basicConfig(level=logging.INFO)
@@ -32,16 +41,17 @@ timeframes = {
     "1D": Interval.INTERVAL_1_DAY
 }
 
-# تخزين بيانات الشموع لكل رمز ولكل فريم
+# تخزين بيانات الشموع لكل رمز ولكل فريم في الذاكرة
 price_data = {}
 for sym in config:
     price_data[sym] = {}
     for tf in timeframes:
         price_data[sym][tf] = {"last_candles": [], "last_alert_time": None, "pending_swing": None}
 
-# مجموعات المشتركين في التنبيهات
+# مجموعات المشتركين (الرياكشن) للتنبيهات
 subscribers_4h = set()
 subscribers_1d = set()
+# سيتم تخزين معرفات رسائل الاشتراك الخاصة بالأسئلة (4H و1D)
 subscription_message_ids = {"4H": None, "1D": None}
 
 # -----------------------------------------
@@ -85,18 +95,40 @@ class MyBot(commands.Bot):
 bot = MyBot()
 
 # -----------------------------------------
-# حدث on_ready
+# عند بدء التشغيل: استرجاع رسائل الاشتراك من قناة التنبيهات
 # -----------------------------------------
 @bot.event
 async def on_ready():
     logger.info(f"Logged in as {bot.user}")
-    channel = bot.get_channel(ALERT_CHANNEL_ID)
-    if channel:
-        msg_4h = await channel.send("مهتم ب 4H سوينغ\nاضغط على الرياكشن للتسجيل.")
-        msg_1d = await channel.send("مهتم ب 1D سوينغ\nاضغط على الرياكشن للتسجيل.")
-        subscription_message_ids["4H"] = msg_4h.id
-        subscription_message_ids["1D"] = msg_1d.id
-        logger.info("Subscription messages sent.")
+    alert_channel = bot.get_channel(ALERT_CHANNEL_ID)
+    if alert_channel:
+        # قراءة آخر 50 رسالة للبحث عن رسائل الاشتراك
+        async for msg in alert_channel.history(limit=50):
+            if msg.author.id == bot.user.id:
+                if msg.content.startswith("مهتم ب 4H سوينغ"):
+                    subscription_message_ids["4H"] = msg.id
+                    for reaction in msg.reactions:
+                        users = await reaction.users().flatten()
+                        for u in users:
+                            if u.id != bot.user.id:
+                                subscribers_4h.add(u.id)
+                elif msg.content.startswith("مهتم ب 1D سوينغ"):
+                    subscription_message_ids["1D"] = msg.id
+                    for reaction in msg.reactions:
+                        users = await reaction.users().flatten()
+                        for u in users:
+                            if u.id != bot.user.id:
+                                subscribers_1d.add(u.id)
+        if not subscription_message_ids["4H"]:
+            msg_4h = await alert_channel.send("مهتم ب 4H سوينغ\nاضغط على الرياكشن للتسجيل.")
+            subscription_message_ids["4H"] = msg_4h.id
+        if not subscription_message_ids["1D"]:
+            msg_1d = await alert_channel.send("مهتم ب 1D سوينغ\nاضغط على الرياكشن للتسجيل.")
+            subscription_message_ids["1D"] = msg_1d.id
+        logger.info("Subscription messages ready.")
+    else:
+        logger.error("Alert channel not found.")
+
     update_prices.start()
 
 # -----------------------------------------
@@ -144,7 +176,17 @@ async def update_prices():
                         data["last_candles"].pop(0)
                     logger.info(f"New candle for {symbol} {tf_label}: {new_candle}")
 
-                    # إذا لم يكن هناك pending swing، اكتشف سوينغ أساسي
+                    # حفظ بيانات الشمعة في MongoDB
+                    collection.insert_one({
+                        "symbol": symbol,
+                        "timeframe": tf_label,
+                        "high": high,
+                        "low": low,
+                        "close": close,
+                        "time": candle_time
+                    })
+
+                    # التحقق من pending swing:
                     if data["pending_swing"] is None:
                         swing = detect_swing(data["last_candles"])
                         if swing is not None:
@@ -194,7 +236,7 @@ async def send_alert(symbol, timeframe, swing_result):
     if timeframe == "4H" and subscribers_4h:
         mentions = " ".join(f"<@{uid}>" for uid in subscribers_4h)
         content += f"\n{mentions}"
-    elif timeframe == "1D" and subscribers_1D:
+    elif timeframe == "1D" and subscribers_1d:
         mentions = " ".join(f"<@{uid}>" for uid in subscribers_1d)
         content += f"\n{mentions}"
     await channel.send(content)
