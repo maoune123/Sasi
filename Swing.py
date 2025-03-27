@@ -4,22 +4,12 @@ from dotenv import load_dotenv
 import discord
 from discord.ext import commands, tasks
 from tradingview_ta import TA_Handler, Interval
-from pymongo import MongoClient
-from keep_alive import keep_alive  # Keep-alive to prevent sleeping
+from keep_alive import keep_alive  # دالة keep_alive لتشغيل خادم ويب بسيط
 
-# Load environment variables from .env
+# تحميل المتغيرات من ملف .env
 load_dotenv()
 TOKEN = os.getenv("DISCORD_TOKEN")
 ALERT_CHANNEL_ID = int(os.getenv("ALERT_CHANNEL_ID"))
-
-# MongoDB configuration
-MONGO_URI = os.getenv("MONGO_URI")  # e.g., "mongodb+srv://username:password@cluster.xxxx.mongodb.net/myCandlesDB?retryWrites=true&w=majority&tlsAllowInvalidCertificates=true"
-DATABASE_NAME = os.getenv("DATABASE_NAME", "candles_db")
-COLLECTION_NAME = os.getenv("COLLECTION_NAME", "candles")
-
-mongo_client = MongoClient(MONGO_URI)
-db = mongo_client[DATABASE_NAME]
-collection = db[COLLECTION_NAME]
 
 # Logging configuration
 logging.basicConfig(level=logging.INFO)
@@ -29,7 +19,7 @@ logger = logging.getLogger(__name__)
 forex_symbols = ["EURUSD", "GBPUSD", "AUDUSD", "NZDUSD", "USDJPY", "USDCAD", "USDCHF"]
 cfd_symbols = ["XAUUSD", "US30USD"]
 
-# Screener & Exchange config
+# Screener & Exchange configuration
 config = {}
 for sym in forex_symbols:
     config[sym] = {"screener": "forex", "exchange": "FOREXCOM"}
@@ -42,18 +32,19 @@ timeframes = {
     "1D": Interval.INTERVAL_1_DAY
 }
 
-# Price data storage (in-memory)
+# Storage for candle data and swing state in memory
 price_data = {}
 for sym in config:
     price_data[sym] = {}
     for tf in timeframes:
+        # يحتفظ بآخر 12 شمعة وحالة pending swing
         price_data[sym][tf] = {"last_candles": [], "last_alert_time": None, "pending_swing": None}
 
-# Subscribers for 4H and 1D
+# Subscribers for alerts
 subscribers_4h = set()
 subscribers_1d = set()
 
-# Message IDs for subscription prompts
+# Subscription message IDs for 4H and 1D alerts
 subscription_message_ids = {"4H": None, "1D": None}
 
 # ------------------------------
@@ -67,15 +58,15 @@ def detect_swing(candles):
     nxt = candles[-1]
 
     swing_type = None
-    # Check for Swing High
-    if (candidate["high"] > previous["high"]
-        and candidate["high"] > nxt["high"]
-        and nxt["low"] <= candidate["low"]):
+    # تحقق من Swing High
+    if (candidate["high"] > previous["high"] and 
+        candidate["high"] > nxt["high"] and 
+        nxt["low"] <= candidate["low"]):
         swing_type = "HIGH"
-    # Check for Swing Low
-    elif (candidate["low"] < previous["low"]
-          and candidate["low"] < nxt["low"]
-          and nxt["high"] >= candidate["high"]):
+    # تحقق من Swing Low
+    elif (candidate["low"] < previous["low"] and 
+          candidate["low"] < nxt["low"] and 
+          nxt["high"] >= candidate["high"]):
         swing_type = "LOW"
     else:
         return None
@@ -103,14 +94,14 @@ class MyBot(commands.Bot):
 bot = MyBot()
 
 # ------------------------------
-# on_ready: Initialize & restore subscriptions
+# on_ready: Restore subscription messages and start tasks
 # ------------------------------
 @bot.event
 async def on_ready():
     logger.info(f"Logged in as {bot.user}")
     alert_channel = bot.get_channel(ALERT_CHANNEL_ID)
     if alert_channel:
-        # Restore subscription messages (read last 50 messages)
+        # استرجاع رسائل الاشتراك (آخر 50 رسالة)
         async for msg in alert_channel.history(limit=50):
             if msg.author.id == bot.user.id:
                 if msg.content.startswith("مهتم ب 4H سوينغ"):
@@ -127,7 +118,7 @@ async def on_ready():
                         for u in users:
                             if u.id != bot.user.id:
                                 subscribers_1d.add(u.id)
-        # If not found, create them
+        # إنشاء رسائل الاشتراك إذا لم تكن موجودة
         if not subscription_message_ids["4H"]:
             msg_4h = await alert_channel.send("مهتم ب 4H سوينغ\nاضغط على الرياكشن للتسجيل.")
             subscription_message_ids["4H"] = msg_4h.id
@@ -139,6 +130,7 @@ async def on_ready():
         logger.error("Alert channel not found.")
 
     update_prices.start()
+    heartbeat.start()
 
 # ------------------------------
 # on_raw_reaction_add: Track subscribers
@@ -153,13 +145,6 @@ async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
     elif payload.message_id == subscription_message_ids.get("1D"):
         subscribers_1d.add(payload.user_id)
         logger.info(f"Added user {payload.user_id} to 1D subscribers.")
-
-# ------------------------------
-# Offload MongoDB insertion to an executor (optional)
-# ------------------------------
-async def save_to_db(document):
-    loop = asyncio.get_running_loop()
-    await loop.run_in_executor(None, collection.insert_one, document)
 
 # ------------------------------
 # update_prices: Main loop every 10 minutes (600 seconds)
@@ -191,16 +176,6 @@ async def update_prices():
                     if len(data["last_candles"]) > 12:
                         data["last_candles"].pop(0)
                     logger.info(f"New candle for {symbol} {tf_label}: {new_candle}")
-
-                    # Save to MongoDB asynchronously
-                    await save_to_db({
-                        "symbol": symbol,
-                        "timeframe": tf_label,
-                        "high": high,
-                        "low": low,
-                        "close": close,
-                        "time": candle_time
-                    })
 
                     # Check for pending swing or detect a new basic swing
                     if data["pending_swing"] is None:
@@ -237,6 +212,13 @@ async def update_prices():
             except Exception as e:
                 logger.error(f"Error fetching data for {symbol} ({tf_label}): {e}")
     await asyncio.sleep(1)
+
+# ------------------------------
+# heartbeat: A simple task to log that the bot is alive every minute
+# ------------------------------
+@tasks.loop(seconds=60)
+async def heartbeat():
+    logger.info("Heartbeat: Bot is running...")
 
 # ------------------------------
 # send_alert: Send Discord alert
