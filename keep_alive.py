@@ -1,6 +1,5 @@
 from flask import Flask
 from threading import Thread
-import os
 
 app = Flask(__name__)
 
@@ -9,8 +8,8 @@ def home():
     return "✅ Bot is running!"
 
 def run():
-    port = int(os.getenv("PORT", 10000))  # استخدم المنفذ من البيئة أو الافتراضي 10000
-    app.run(host="0.0.0.0", port=port)
+    # يتم استخدام منفذ ثابت هنا (على سبيل المثال 10000)
+    app.run(host="0.0.0.0", port=10000)
 
 def keep_alive():
     t = Thread(target=run)
