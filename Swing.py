@@ -4,7 +4,7 @@ from dotenv import load_dotenv
 import discord
 from discord.ext import commands, tasks
 from tradingview_ta import TA_Handler, Interval
-from keep_alive import keep_alive  # دالة keep_alive لتشغيل خادم ويب بسيط
+from keep_alive import keep_alive  # Keep-alive to prevent sleeping
 
 # تحميل المتغيرات من ملف .env
 load_dotenv()
@@ -94,38 +94,19 @@ class MyBot(commands.Bot):
 bot = MyBot()
 
 # ------------------------------
-# on_ready: Restore subscription messages and start tasks
+# on_ready: Send subscription messages and start tasks
 # ------------------------------
 @bot.event
 async def on_ready():
     logger.info(f"Logged in as {bot.user}")
     alert_channel = bot.get_channel(ALERT_CHANNEL_ID)
     if alert_channel:
-        # استرجاع رسائل الاشتراك (آخر 50 رسالة)
-        async for msg in alert_channel.history(limit=50):
-            if msg.author.id == bot.user.id:
-                if msg.content.startswith("مهتم ب 4H سوينغ"):
-                    subscription_message_ids["4H"] = msg.id
-                    for reaction in msg.reactions:
-                        users = [user async for user in reaction.users()]
-                        for u in users:
-                            if u.id != bot.user.id:
-                                subscribers_4h.add(u.id)
-                elif msg.content.startswith("مهتم ب 1D سوينغ"):
-                    subscription_message_ids["1D"] = msg.id
-                    for reaction in msg.reactions:
-                        users = [user async for user in reaction.users()]
-                        for u in users:
-                            if u.id != bot.user.id:
-                                subscribers_1d.add(u.id)
-        # إنشاء رسائل الاشتراك إذا لم تكن موجودة
-        if not subscription_message_ids["4H"]:
-            msg_4h = await alert_channel.send("مهتم ب 4H سوينغ\nاضغط على الرياكشن للتسجيل.")
-            subscription_message_ids["4H"] = msg_4h.id
-        if not subscription_message_ids["1D"]:
-            msg_1d = await alert_channel.send("مهتم ب 1D سوينغ\nاضغط على الرياكشن للتسجيل.")
-            subscription_message_ids["1D"] = msg_1d.id
-        logger.info("Subscription messages ready.")
+        # إرسال رسائل الاشتراك دائمًا عند بدء التشغيل
+        msg_4h = await alert_channel.send("مهتم ب 4H سوينغ\nاضغط على الرياكشن للتسجيل.")
+        subscription_message_ids["4H"] = msg_4h.id
+        msg_1d = await alert_channel.send("مهتم ب 1D سوينغ\nاضغط على الرياكشن للتسجيل.")
+        subscription_message_ids["1D"] = msg_1d.id
+        logger.info("Subscription messages sent.")
     else:
         logger.error("Alert channel not found.")
 
