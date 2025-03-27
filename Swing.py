@@ -67,10 +67,12 @@ def detect_swing(candles):
     nxt = candles[-1]
 
     swing_type = None
+    # Check for Swing High
     if (candidate["high"] > previous["high"] and 
         candidate["high"] > nxt["high"] and 
         nxt["low"] <= candidate["low"]):
         swing_type = "HIGH"
+    # Check for Swing Low
     elif (candidate["low"] < previous["low"] and 
           candidate["low"] < nxt["low"] and 
           nxt["high"] >= candidate["high"]):
@@ -108,20 +110,20 @@ async def on_ready():
     logger.info(f"Logged in as {bot.user}")
     alert_channel = bot.get_channel(ALERT_CHANNEL_ID)
     if alert_channel:
-        # Restore subscription messages (last 50 messages)
+        # Restore subscription messages (read last 50 messages)
         async for msg in alert_channel.history(limit=50):
             if msg.author.id == bot.user.id:
                 if msg.content.startswith("مهتم ب 4H سوينغ"):
                     subscription_message_ids["4H"] = msg.id
                     for reaction in msg.reactions:
-                        users = await reaction.users().flatten()
+                        users = [user async for user in reaction.users()]
                         for u in users:
                             if u.id != bot.user.id:
                                 subscribers_4h.add(u.id)
                 elif msg.content.startswith("مهتم ب 1D سوينغ"):
                     subscription_message_ids["1D"] = msg.id
                     for reaction in msg.reactions:
-                        users = await reaction.users().flatten()
+                        users = [user async for user in reaction.users()]
                         for u in users:
                             if u.id != bot.user.id:
                                 subscribers_1d.add(u.id)
@@ -152,7 +154,7 @@ async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
         logger.info(f"Added user {payload.user_id} to 1D subscribers.")
 
 # ------------------------------
-# Offload MongoDB insertion to an executor
+# Offload MongoDB insertion to an executor (optional)
 # ------------------------------
 async def save_to_db(document):
     loop = asyncio.get_running_loop()
@@ -182,8 +184,6 @@ async def update_prices():
                 close = float(indicators.get("close", 0))
 
                 data = price_data[symbol][tf_label]
-
-                # If a new candle is detected
                 if not data["last_candles"] or data["last_candles"][-1]["time"] != candle_time:
                     new_candle = {"high": high, "low": low, "close": close, "time": candle_time}
                     data["last_candles"].append(new_candle)
@@ -250,7 +250,6 @@ async def send_alert(symbol, timeframe, swing_result):
         f"تنبيه: تم تشكيل {formation} {swing_type} سوينغ للعملة {symbol} على فريم {timeframe}.\n"
         f"الشمعة (Base): {datetime.fromtimestamp(swing_result['candle_time']).strftime('%Y-%m-%d %H:%M:%S')}"
     )
-    # Mention subscribers if available
     if timeframe == "4H" and subscribers_4h:
         mentions = " ".join(f"<@{uid}>" for uid in subscribers_4h)
         content += f"\n{mentions}"
