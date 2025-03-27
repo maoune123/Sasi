@@ -5,58 +5,60 @@ import discord
 from discord.ext import commands, tasks
 from tradingview_ta import TA_Handler, Interval
 from pymongo import MongoClient
-from keep_alive import keep_alive  # دالة keep_alive لتشغيل خادم ويب بسيط
+from keep_alive import keep_alive  # Keep-alive to prevent sleeping
 
-# تحميل المتغيرات من ملف .env
+# Load environment variables from .env
 load_dotenv()
 TOKEN = os.getenv("DISCORD_TOKEN")
 ALERT_CHANNEL_ID = int(os.getenv("ALERT_CHANNEL_ID"))
 
-# إعداد MongoDB: يتم جلب DATABASE_NAME و COLLECTION_NAME من ملف .env، أو استخدام القيم الافتراضية
+# MongoDB configuration
 MONGO_URI = os.getenv("MONGO_URI")
 DATABASE_NAME = os.getenv("DATABASE_NAME", "candles_db")
 COLLECTION_NAME = os.getenv("COLLECTION_NAME", "candles")
+
 mongo_client = MongoClient(MONGO_URI)
 db = mongo_client[DATABASE_NAME]
 collection = db[COLLECTION_NAME]
 
-# إعداد السجل
+# Logging configuration
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# إعداد الرموز
+# Define symbols
 forex_symbols = ["EURUSD", "GBPUSD", "AUDUSD", "NZDUSD", "USDJPY", "USDCAD", "USDCHF"]
 cfd_symbols = ["XAUUSD", "US30USD"]
 
-# إعداد الكونفيغ لكل رمز (screener و exchange)
+# Screener & Exchange config
 config = {}
 for sym in forex_symbols:
     config[sym] = {"screener": "forex", "exchange": "FOREXCOM"}
 for sym in cfd_symbols:
     config[sym] = {"screener": "cfd", "exchange": "OANDA"}
 
-# الإطارات الزمنية: 4H و 1D
+# Timeframes
 timeframes = {
     "4H": Interval.INTERVAL_4_HOURS,
     "1D": Interval.INTERVAL_1_DAY
 }
 
-# تخزين بيانات الشموع لكل رمز ولكل فريم في الذاكرة
+# Price data storage
 price_data = {}
 for sym in config:
     price_data[sym] = {}
     for tf in timeframes:
         price_data[sym][tf] = {"last_candles": [], "last_alert_time": None, "pending_swing": None}
 
-# مجموعات المشتركين (الرياكشن) للتنبيهات
+# Subscribers for 4H and 1D
 subscribers_4h = set()
 subscribers_1d = set()
-# سيتم تخزين معرفات رسائل الاشتراك الخاصة بالأسئلة (4H و1D)
+
+# Message IDs for subscription prompts
 subscription_message_ids = {"4H": None, "1D": None}
 
-# -----------------------------------------
-# دالة اكتشاف السوينغ الأساسي (Basic Swing)
-# -----------------------------------------
+# ------------------------------
+# detect_swing: Basic Swing Logic
+# ------------------------------
 def detect_swing(candles):
     if len(candles) < 3:
         return None
@@ -65,9 +67,15 @@ def detect_swing(candles):
     nxt = candles[-1]
 
     swing_type = None
-    if candidate["high"] > previous["high"] and candidate["high"] > nxt["high"] and nxt["low"] <= candidate["low"]:
+    # Check for Swing High
+    if (candidate["high"] > previous["high"]
+        and candidate["high"] > nxt["high"]
+        and nxt["low"] <= candidate["low"]):
         swing_type = "HIGH"
-    elif candidate["low"] < previous["low"] and candidate["low"] < nxt["low"] and nxt["high"] >= candidate["high"]:
+    # Check for Swing Low
+    elif (candidate["low"] < previous["low"]
+          and candidate["low"] < nxt["low"]
+          and nxt["high"] >= candidate["high"]):
         swing_type = "LOW"
     else:
         return None
@@ -78,9 +86,9 @@ def detect_swing(candles):
         "candle_time": candidate["time"]
     }
 
-# -----------------------------------------
-# إعداد البوت
-# -----------------------------------------
+# ------------------------------
+# Discord Bot Setup
+# ------------------------------
 intents = discord.Intents.default()
 intents.message_content = True
 intents.reactions = True
@@ -94,17 +102,19 @@ class MyBot(commands.Bot):
 
 bot = MyBot()
 
-# -----------------------------------------
-# عند بدء التشغيل: استرجاع رسائل الاشتراك من قناة التنبيهات
-# -----------------------------------------
+# ------------------------------
+# on_ready: Initialize & restore
+# ------------------------------
 @bot.event
 async def on_ready():
     logger.info(f"Logged in as {bot.user}")
     alert_channel = bot.get_channel(ALERT_CHANNEL_ID)
+
+    # 1) Restore subscription messages or create them if not found
     if alert_channel:
-        # قراءة آخر 50 رسالة للبحث عن رسائل الاشتراك
         async for msg in alert_channel.history(limit=50):
             if msg.author.id == bot.user.id:
+                # Check if it's the 4H subscription prompt
                 if msg.content.startswith("مهتم ب 4H سوينغ"):
                     subscription_message_ids["4H"] = msg.id
                     for reaction in msg.reactions:
@@ -112,6 +122,7 @@ async def on_ready():
                         for u in users:
                             if u.id != bot.user.id:
                                 subscribers_4h.add(u.id)
+                # Check if it's the 1D subscription prompt
                 elif msg.content.startswith("مهتم ب 1D سوينغ"):
                     subscription_message_ids["1D"] = msg.id
                     for reaction in msg.reactions:
@@ -119,6 +130,7 @@ async def on_ready():
                         for u in users:
                             if u.id != bot.user.id:
                                 subscribers_1d.add(u.id)
+        # If not found, create them
         if not subscription_message_ids["4H"]:
             msg_4h = await alert_channel.send("مهتم ب 4H سوينغ\nاضغط على الرياكشن للتسجيل.")
             subscription_message_ids["4H"] = msg_4h.id
@@ -129,11 +141,12 @@ async def on_ready():
     else:
         logger.error("Alert channel not found.")
 
+    # 2) Start the price update loop
     update_prices.start()
 
-# -----------------------------------------
-# تسجيل التفاعلات على رسائل الاشتراك
-# -----------------------------------------
+# ------------------------------
+# on_raw_reaction_add: Track subscribers
+# ------------------------------
 @bot.event
 async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
     if payload.guild_id is None or payload.user_id == bot.user.id:
@@ -145,10 +158,10 @@ async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
         subscribers_1d.add(payload.user_id)
         logger.info(f"Added user {payload.user_id} to 1D subscribers.")
 
-# -----------------------------------------
-# المهمة الدورية لتحديث الأسعار وفحص السوينغ والتسلسل
-# -----------------------------------------
-@tasks.loop(seconds=60)
+# ------------------------------
+# update_prices: main loop every 10 min
+# ------------------------------
+@tasks.loop(seconds=600)  # 600 seconds = 10 minutes
 async def update_prices():
     logger.debug("Checking prices for all symbols and timeframes...")
     for symbol, cfg in config.items():
@@ -169,14 +182,21 @@ async def update_prices():
                 close = float(indicators.get("close", 0))
 
                 data = price_data[symbol][tf_label]
+
+                # If a new candle is detected
                 if not data["last_candles"] or data["last_candles"][-1]["time"] != candle_time:
-                    new_candle = {"high": high, "low": low, "close": close, "time": candle_time}
+                    new_candle = {
+                        "high": high,
+                        "low": low,
+                        "close": close,
+                        "time": candle_time
+                    }
                     data["last_candles"].append(new_candle)
                     if len(data["last_candles"]) > 12:
                         data["last_candles"].pop(0)
                     logger.info(f"New candle for {symbol} {tf_label}: {new_candle}")
 
-                    # حفظ بيانات الشمعة في MongoDB
+                    # Save to MongoDB
                     collection.insert_one({
                         "symbol": symbol,
                         "timeframe": tf_label,
@@ -186,7 +206,7 @@ async def update_prices():
                         "time": candle_time
                     })
 
-                    # التحقق من pending swing:
+                    # Check pending swing or detect new swing
                     if data["pending_swing"] is None:
                         swing = detect_swing(data["last_candles"])
                         if swing is not None:
@@ -198,6 +218,7 @@ async def update_prices():
                                 "reference": data["last_candles"][-2]
                             }
                     else:
+                        # Extend sequence if possible
                         pending = data["pending_swing"]
                         ref = pending["reference"]
                         if pending["swing_type"] == "HIGH":
@@ -222,17 +243,20 @@ async def update_prices():
                 logger.error(f"Error fetching data for {symbol} ({tf_label}): {e}")
     await asyncio.sleep(1)
 
-# -----------------------------------------
-# دالة إرسال التنبيه مع تاغ المشتركين المناسبين
-# -----------------------------------------
+# ------------------------------
+# send_alert: send Discord alert
+# ------------------------------
 async def send_alert(symbol, timeframe, swing_result):
     channel = bot.get_channel(ALERT_CHANNEL_ID)
     if not channel:
         return
     swing_type = swing_result["swing_type"]
     formation = swing_result.get("formation", "BASIC")
-    content = (f"تنبيه: تم تشكيل {formation} {swing_type} سوينغ للعملة {symbol} على فريم {timeframe}.\n"
-               f"الشمعة (Base): {datetime.fromtimestamp(swing_result['candle_time']).strftime('%Y-%m-%d %H:%M:%S')}")
+    content = (
+        f"تنبيه: تم تشكيل {formation} {swing_type} سوينغ للعملة {symbol} على فريم {timeframe}.\n"
+        f"الشمعة (Base): {datetime.fromtimestamp(swing_result['candle_time']).strftime('%Y-%m-%d %H:%M:%S')}"
+    )
+    # Mention subscribers
     if timeframe == "4H" and subscribers_4h:
         mentions = " ".join(f"<@{uid}>" for uid in subscribers_4h)
         content += f"\n{mentions}"
@@ -242,12 +266,12 @@ async def send_alert(symbol, timeframe, swing_result):
     await channel.send(content)
     logger.info(f"Alert sent for {symbol} on {timeframe} with formation {formation}.")
 
-# -----------------------------------------
-# تشغيل keep_alive لتجنب توقف التطبيق
-# -----------------------------------------
+# ------------------------------
+# Keep the bot alive
+# ------------------------------
 keep_alive()
 
-# -----------------------------------------
-# تشغيل البوت
-# -----------------------------------------
+# ------------------------------
+# Run the bot
+# ------------------------------
 bot.run(TOKEN)
