@@ -42,7 +42,7 @@ timeframes = {
     "1D": Interval.INTERVAL_1_DAY
 }
 
-# Price data storage
+# Price data storage (in-memory)
 price_data = {}
 for sym in config:
     price_data[sym] = {}
@@ -67,15 +67,13 @@ def detect_swing(candles):
     nxt = candles[-1]
 
     swing_type = None
-    # Check for Swing High
-    if (candidate["high"] > previous["high"]
-        and candidate["high"] > nxt["high"]
-        and nxt["low"] <= candidate["low"]):
+    if (candidate["high"] > previous["high"] and 
+        candidate["high"] > nxt["high"] and 
+        nxt["low"] <= candidate["low"]):
         swing_type = "HIGH"
-    # Check for Swing Low
-    elif (candidate["low"] < previous["low"]
-          and candidate["low"] < nxt["low"]
-          and nxt["high"] >= candidate["high"]):
+    elif (candidate["low"] < previous["low"] and 
+          candidate["low"] < nxt["low"] and 
+          nxt["high"] >= candidate["high"]):
         swing_type = "LOW"
     else:
         return None
@@ -103,18 +101,16 @@ class MyBot(commands.Bot):
 bot = MyBot()
 
 # ------------------------------
-# on_ready: Initialize & restore
+# on_ready: Initialize & restore subscriptions
 # ------------------------------
 @bot.event
 async def on_ready():
     logger.info(f"Logged in as {bot.user}")
     alert_channel = bot.get_channel(ALERT_CHANNEL_ID)
-
-    # 1) Restore subscription messages or create them if not found
     if alert_channel:
+        # Restore subscription messages (last 50 messages)
         async for msg in alert_channel.history(limit=50):
             if msg.author.id == bot.user.id:
-                # Check if it's the 4H subscription prompt
                 if msg.content.startswith("مهتم ب 4H سوينغ"):
                     subscription_message_ids["4H"] = msg.id
                     for reaction in msg.reactions:
@@ -122,7 +118,6 @@ async def on_ready():
                         for u in users:
                             if u.id != bot.user.id:
                                 subscribers_4h.add(u.id)
-                # Check if it's the 1D subscription prompt
                 elif msg.content.startswith("مهتم ب 1D سوينغ"):
                     subscription_message_ids["1D"] = msg.id
                     for reaction in msg.reactions:
@@ -130,7 +125,6 @@ async def on_ready():
                         for u in users:
                             if u.id != bot.user.id:
                                 subscribers_1d.add(u.id)
-        # If not found, create them
         if not subscription_message_ids["4H"]:
             msg_4h = await alert_channel.send("مهتم ب 4H سوينغ\nاضغط على الرياكشن للتسجيل.")
             subscription_message_ids["4H"] = msg_4h.id
@@ -141,7 +135,6 @@ async def on_ready():
     else:
         logger.error("Alert channel not found.")
 
-    # 2) Start the price update loop
     update_prices.start()
 
 # ------------------------------
@@ -159,9 +152,16 @@ async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
         logger.info(f"Added user {payload.user_id} to 1D subscribers.")
 
 # ------------------------------
-# update_prices: main loop every 10 min
+# Offload MongoDB insertion to an executor
 # ------------------------------
-@tasks.loop(seconds=600)  # 600 seconds = 10 minutes
+async def save_to_db(document):
+    loop = asyncio.get_running_loop()
+    await loop.run_in_executor(None, collection.insert_one, document)
+
+# ------------------------------
+# update_prices: Main loop every 10 minutes (600 seconds)
+# ------------------------------
+@tasks.loop(seconds=600)
 async def update_prices():
     logger.debug("Checking prices for all symbols and timeframes...")
     for symbol, cfg in config.items():
@@ -185,19 +185,14 @@ async def update_prices():
 
                 # If a new candle is detected
                 if not data["last_candles"] or data["last_candles"][-1]["time"] != candle_time:
-                    new_candle = {
-                        "high": high,
-                        "low": low,
-                        "close": close,
-                        "time": candle_time
-                    }
+                    new_candle = {"high": high, "low": low, "close": close, "time": candle_time}
                     data["last_candles"].append(new_candle)
                     if len(data["last_candles"]) > 12:
                         data["last_candles"].pop(0)
                     logger.info(f"New candle for {symbol} {tf_label}: {new_candle}")
 
-                    # Save to MongoDB
-                    collection.insert_one({
+                    # Save to MongoDB asynchronously
+                    await save_to_db({
                         "symbol": symbol,
                         "timeframe": tf_label,
                         "high": high,
@@ -206,7 +201,7 @@ async def update_prices():
                         "time": candle_time
                     })
 
-                    # Check pending swing or detect new swing
+                    # Check for pending swing or detect a new basic swing
                     if data["pending_swing"] is None:
                         swing = detect_swing(data["last_candles"])
                         if swing is not None:
@@ -218,7 +213,6 @@ async def update_prices():
                                 "reference": data["last_candles"][-2]
                             }
                     else:
-                        # Extend sequence if possible
                         pending = data["pending_swing"]
                         ref = pending["reference"]
                         if pending["swing_type"] == "HIGH":
@@ -244,7 +238,7 @@ async def update_prices():
     await asyncio.sleep(1)
 
 # ------------------------------
-# send_alert: send Discord alert
+# send_alert: Send Discord alert
 # ------------------------------
 async def send_alert(symbol, timeframe, swing_result):
     channel = bot.get_channel(ALERT_CHANNEL_ID)
@@ -256,7 +250,7 @@ async def send_alert(symbol, timeframe, swing_result):
         f"تنبيه: تم تشكيل {formation} {swing_type} سوينغ للعملة {symbol} على فريم {timeframe}.\n"
         f"الشمعة (Base): {datetime.fromtimestamp(swing_result['candle_time']).strftime('%Y-%m-%d %H:%M:%S')}"
     )
-    # Mention subscribers
+    # Mention subscribers if available
     if timeframe == "4H" and subscribers_4h:
         mentions = " ".join(f"<@{uid}>" for uid in subscribers_4h)
         content += f"\n{mentions}"
