@@ -1,4 +1,5 @@
 discord.py
-tradingview_ta
 python-dotenv
+tradingview_ta
+pymongo
 flask
