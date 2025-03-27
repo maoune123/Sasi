@@ -1,6 +1,4 @@
 discord.py
 python-dotenv
 tradingview_ta
-pymongo>=4.3.3
 flask
-dnspython
